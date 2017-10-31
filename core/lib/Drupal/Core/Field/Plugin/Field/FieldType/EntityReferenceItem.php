@@ -46,6 +46,7 @@ class EntityReferenceItem extends FieldItemBase implements OptionsProviderInterf
   public static function defaultStorageSettings() {
     return [
       'target_type' => \Drupal::moduleHandler()->moduleExists('node') ? 'node' : 'user',
+      'reference_revisions' => FALSE,
     ] + parent::defaultStorageSettings();
   }
 
@@ -86,6 +87,13 @@ class EntityReferenceItem extends FieldItemBase implements OptionsProviderInterf
     $target_id_definition->setRequired(TRUE);
     $properties['target_id'] = $target_id_definition;
 
+    $target_revision_id_definition = DataReferenceTargetDefinition::create('integer')
+      ->setLabel(t('@label revision ID', array('@label' => $target_type_info->getLabel())))
+      ->setSetting('unsigned', TRUE);
+
+    $target_revision_id_definition->setRequired(FALSE);
+    $properties['target_revision_id'] = $target_revision_id_definition;
+
     $properties['entity'] = DataReferenceDefinition::create('entity')
       ->setLabel($target_type_info->getLabel())
       ->setDescription(new TranslatableMarkup('The referenced entity'))
@@ -115,6 +123,8 @@ class EntityReferenceItem extends FieldItemBase implements OptionsProviderInterf
     $target_type = $field_definition->getSetting('target_type');
     $target_type_info = \Drupal::entityManager()->getDefinition($target_type);
     $properties = static::propertyDefinitions($field_definition)['target_id'];
+    $settings = $field_definition->getSettings();
+
     if ($target_type_info->entityClassImplements(FieldableEntityInterface::class) && $properties->getDataType() === 'integer') {
       $columns = [
         'target_id' => [
@@ -123,6 +133,20 @@ class EntityReferenceItem extends FieldItemBase implements OptionsProviderInterf
           'unsigned' => TRUE,
         ],
       ];
+
+      $indexes = [
+        'target_id' => ['target_id'],
+      ];
+      if ($field_definition->getSetting('reference_revisions') == TRUE) {
+        $columns['target_revision_id'] = [
+          'description' => 'The revision ID of the target entity.',
+          'type' => 'int',
+          'not null' => TRUE,
+          'default' => 0,
+          'unsigned' => TRUE,
+        ];
+        $indexes['target_revision_id'] = ['target_revision_id'];
+      }
     }
     else {
       $columns = [
@@ -134,13 +158,14 @@ class EntityReferenceItem extends FieldItemBase implements OptionsProviderInterf
           'length' => $target_type_info->getBundleOf() ? EntityTypeInterface::BUNDLE_MAX_LENGTH : 255,
         ],
       ];
+      $indexes = [
+        'target_id' => ['target_id'],
+      ];
     }
 
     $schema = [
       'columns' => $columns,
-      'indexes' => [
-        'target_id' => ['target_id'],
-      ],
+      'indexes' => $indexes,
     ];
 
     return $schema;
@@ -177,6 +202,9 @@ class EntityReferenceItem extends FieldItemBase implements OptionsProviderInterf
       // NULL is a valid value, so we use array_key_exists().
       if (is_array($values) && array_key_exists('target_id', $values) && !isset($values['entity'])) {
         $this->onChange('target_id', FALSE);
+      }
+      elseif (is_array($values) && array_key_exists('target_revision_id', $values) && !isset($values['entity'])) {
+        $this->onChange('target_revision_id', FALSE);
       }
       elseif (is_array($values) && !array_key_exists('target_id', $values) && isset($values['entity'])) {
         $this->onChange('entity', FALSE);
@@ -223,11 +251,27 @@ class EntityReferenceItem extends FieldItemBase implements OptionsProviderInterf
    * {@inheritdoc}
    */
   public function onChange($property_name, $notify = TRUE) {
+    $settings = $this->getSettings();
     // Make sure that the target ID and the target property stay in sync.
     if ($property_name == 'entity') {
       $property = $this->get('entity');
       $target_id = $property->isTargetNew() ? NULL : $property->getTargetIdentifier();
       $this->writePropertyValue('target_id', $target_id);
+      if (isset($settings['reference_revisions']) && $settings['reference_revisions']) {
+        $this->writePropertyValue('target_revision_id', $property->getValue()->getRevisionId());
+      }
+    }
+    elseif ($property_name == 'target_id' && $this->target_id != NULL && $this->target_revision_id) {
+      $this->writePropertyValue('entity', array(
+        'target_id' => $this->target_id,
+        'target_revision_id' => $this->target_revision_id,
+      ));
+    }
+    elseif ($property_name == 'target_revision_id' && $this->target_revision_id && $this->target_id) {
+      $this->writePropertyValue('entity', array(
+        'target_id' => $this->target_id,
+        'target_revision_id' => $this->target_revision_id,
+      ));
     }
     elseif ($property_name == 'target_id') {
       $this->writePropertyValue('entity', $this->target_id);
@@ -261,9 +305,11 @@ class EntityReferenceItem extends FieldItemBase implements OptionsProviderInterf
       // Make sure the parent knows we are updating this property so it can
       // react properly.
       $this->target_id = $this->entity->id();
+      $this->target_revision_id = $this->entity->getRevisionId();
     }
     if (!$this->isEmpty() && $this->target_id === NULL) {
       $this->target_id = $this->entity->id();
+      $this->target_revision_id = $this->entity->getRevisionId();
     }
   }
 
@@ -310,6 +356,12 @@ class EntityReferenceItem extends FieldItemBase implements OptionsProviderInterf
       '#required' => TRUE,
       '#disabled' => $has_data,
       '#size' => 1,
+    ];
+    $element['reference_revisions'] = [
+      '#type' => 'checkbox',
+      '#title' => $this->t("Reference a specific revision instead of the default revision."),
+      '#default_value' => $this->getSetting('reference_revisions'),
+      '#weight' => -2,
     ];
 
     return $element;

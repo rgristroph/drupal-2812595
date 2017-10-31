@@ -34,6 +34,13 @@ use Drupal\Core\TypedData\DataReferenceBase;
 class EntityReference extends DataReferenceBase {
 
   /**
+   * The entity revision ID.
+   *
+   * @var integer|string
+   */
+  protected $revision_id;
+
+  /**
    * The entity ID.
    *
    * @var int|string
@@ -66,10 +73,18 @@ class EntityReference extends DataReferenceBase {
    */
   public function getTarget() {
     if (!isset($this->target) && isset($this->id)) {
-      // If we have a valid reference, return the entity's TypedData adapter.
-      $entity = \Drupal::entityTypeManager()
-        ->getStorage($this->getTargetDefinition()->getEntityTypeId())
-        ->load($this->id);
+      // If we have a valid reference, return the entity's TypedData adapter,
+      // using the revision if we have it, otherwise the id.
+      if ( isset($this->revision_id) ) {
+        $entity = \Drupal::entityTypeManager()
+          ->getStorage($this->getTargetDefinition()->getEntityTypeId())
+          ->loadRevision($this->revision_id);
+      }
+      else {
+        $entity = \Drupal::entityTypeManager()
+          ->getStorage($this->getTargetDefinition()->getEntityTypeId())
+          ->load($this->id);
+      }
       $this->target = isset($entity) ? $entity->getTypedData() : NULL;
     }
     return $this->target;
@@ -93,6 +108,7 @@ class EntityReference extends DataReferenceBase {
   public function setValue($value, $notify = TRUE) {
     unset($this->target);
     unset($this->id);
+    unset($this->revision_id);
 
     // Both the entity ID and the entity object may be passed as value. The
     // reference may also be unset by passing NULL as value.
@@ -102,11 +118,15 @@ class EntityReference extends DataReferenceBase {
     elseif ($value instanceof EntityInterface) {
       $this->target = $value->getTypedData();
     }
-    elseif (!is_scalar($value) || $this->getTargetDefinition()->getEntityTypeId() === NULL) {
-      throw new \InvalidArgumentException('Value is not a valid entity.');
-    }
-    else {
+    elseif (is_scalar($value)) {
       $this->id = $value;
+    }
+    elseif (is_array($value) && is_scalar($value['target_id']) && is_scalar($value['target_revision_id'])) {
+      $this->id = $value['target_id'];
+      $this->revision_id = $value['target_revision_id'];
+    }     
+    elseif (!(is_scalar($value) && is_array($value)) || $this->getTargetDefinition()->getEntityTypeId() === NULL) {
+      throw new \InvalidArgumentException('Value is not a valid entity.');
     }
     // Notify the parent of any changes.
     if ($notify && isset($this->parent)) {
